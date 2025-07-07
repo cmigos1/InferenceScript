@@ -1,0 +1,16 @@
+{
+  "llama_server_path": "/home/trecopad/llama.cpp/build/bin/llama-server",
+  "models": [
+    {
+      "name": "phi-4-Q4_K_M",
+      "path": "/home/trecopad/llama.cpp/build/bin/phi-4-Q4_K_M.gguf"
+    }
+  ],
+  "threads": 8,
+  "mt_bench_url": "https://raw.githubusercontent.com/mtbench101/mt-bench-101/main/data/subjective/mtbench101.jsonl",
+  "local_data_file": "mtbench101.jsonl",
+  "output_csv": "mt_bench_results.csv",
+  "server_host": "127.0.0.1",
+  "server_port": 8080,
+  "tokens_to_generate": 512
+}

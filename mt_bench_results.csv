@@ -1,0 +1,4 @@
+model_name,threads,question_id,category,turn,ttft_ms,tpot_ms,tokens_per_sec,prompt_tokens,generated_tokens
+phi-4-Q4_K_M,8,1,GR,1,2603.49,9.124,12.675293548275585,33,1
+phi-4-Q4_K_M,8,1,GR,2,6465.215,233.29030263157892,4.286504791325333,82,152
+phi-4-Q4_K_M,8,2,GR,1,2195.152,0.024,8.65543707223919,19,1
