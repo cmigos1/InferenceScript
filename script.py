@@ -4,6 +4,9 @@ import time
 import requests
 import csv
 import os
+import random
+import platform
+from collections import defaultdict
 
 def load_mt_bench_data(config):
     """Baixa e carrega os dados do MT-Bench 101 se não existirem localmente."""
@@ -39,7 +42,8 @@ def start_server(config, model_path, threads):
         "-t", str(threads),
         "--host", config['server_host'],
         "--port", str(config['server_port']),
-        "--chat-template", "phi4"
+        "--jinja",
+        "--chat-template-file", "phi4.jinja"  # Força o uso do template phi4.jinja
     ]
     print(f"Iniciando servidor: {' '.join(command)}")
     server_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -112,14 +116,68 @@ def run_inference(config, prompt):
     except requests.RequestException as e:
         print(f"Erro ao fazer requisição: {e}")
         return None
+    
+def sample_data(data, config):
+    """Seleciona um subconjunto de dados de forma aleatória e balanceada por categoria."""
+    if not config.get('enabled', False):
+        return data
+
+    questions_per_category = config.get('questions_per_category', 5)  # 5 questões por categoria por padrão
+    
+    print(f"Iniciando amostragem com {questions_per_category} questões por categoria...")
+    print(f"Isso gerará {questions_per_category * 2} logs por categoria (2 logs por questão)...")
+
+    # Agrupa os prompts por categoria
+    categorized_data = defaultdict(list)
+    for item in data:
+        category = item.get('category', item.get('task', 'unknown'))
+        categorized_data[category].append(item)
+
+    sampled_data = []
+    total_questions = 0
+    total_logs = 0
+    
+    # Seleciona aleatoriamente um número fixo de questões de cada categoria
+    for category, items in categorized_data.items():
+        # Garante que a semente aleatória seja a mesma para reprodutibilidade
+        random.seed(config.get('random_seed', 42))
+        
+        if len(items) > questions_per_category:
+            sampled_items = random.sample(items, questions_per_category)
+        else:
+            # Pega todos se houver menos que o solicitado
+            sampled_items = items
+            print(f"AVISO: Categoria '{category}' tem apenas {len(items)} questões (solicitado: {questions_per_category})")
+        
+        sampled_data.extend(sampled_items)
+        category_questions = len(sampled_items)
+        category_logs = category_questions * 2
+        total_questions += category_questions
+        total_logs += category_logs
+        
+        print(f"  Categoria '{category}': {category_questions} questões = {category_logs} logs")
+
+    # Embaralha a lista final para garantir que a ordem das categorias seja aleatória
+    random.shuffle(sampled_data)
+
+    print(f"Amostragem concluída:")
+    print(f"  Total de questões selecionadas: {total_questions}")
+    print(f"  Total de logs que serão gerados: {total_logs}")
+    print(f"  Categorias encontradas: {len(categorized_data)}")
+    
+    return sampled_data
 
 def main():
     with open("config.json", "r") as f:
         config = json.load(f)
 
-    mt_bench_data = load_mt_bench_data(config)
-    if not mt_bench_data:
+    # Carrega todos os dados do MT-Bench
+    all_mt_bench_data = load_mt_bench_data(config)
+    if not all_mt_bench_data:
         return
+
+    # Aplica a amostragem aos dados carregados
+    mt_bench_data = sample_data(all_mt_bench_data, config.get('sampling_config', {}))
 
     with open(config['output_csv'], 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = [
@@ -137,22 +195,26 @@ def main():
 
             for item in mt_bench_data:
                     question_id = item['id']
-                    # Determine category, defaulting to task if category missing
                     category = item.get('category', item.get('task', 'unknown'))
-                    # Build turn prompts from history if available, else use legacy 'turns'
+                    
                     if 'history' in item and isinstance(item['history'], list):
                         turns = [h['user'] for h in item['history'] if 'user' in h]
                     else:
                         turns = item.get('turns', [])
-                    # Need at least two user prompts for two turns
+
                     if len(turns) < 2:
                         continue
+
+                    # Extrai as perguntas originais para ambos os turnos
+                    raw_question1 = turns[0]
+                    raw_question2 = turns[1]
+
                     # --- Turno 1 ---
-                    # Use extracted prompts
-                    prompt1 = turns[0]
+                    # Formata o prompt para o primeiro turno
+                    prompt1_formatted = f"<|im_start|>user\n{raw_question1}<|im_end|>\n<|im_start|>assistant\n"
                     print(f"\nTestando: ID={question_id}, Cat={category}, Turno=1")
                     
-                    response1_data = run_inference(config, prompt1)
+                    response1_data = run_inference(config, prompt1_formatted)
                     if not response1_data: continue
 
                     # Coleta de métricas do Turno 1
@@ -160,15 +222,9 @@ def main():
                     predicted_ms = timing1.get('predicted_ms', 0)
                     predicted_n = timing1.get('predicted_n', 0)
                     prompt_ms = timing1.get('prompt_ms', 0)
-                    
-                    # Usar o valor já calculado pelo servidor quando disponível
                     tps1 = timing1.get('predicted_per_second', 0)
-                    
-                    # Para casos especiais (1 token, EOS), usar uma abordagem mais conservadora
                     if predicted_n == 1 and predicted_ms < 1.0:
-                        # Muito provável que seja um EOS token imediato - usar valor mais baixo
-                        tps1 = min(tps1, 100)  # Limitar a 100 T/s no máximo
-                    
+                        tps1 = min(tps1, 100)
                     tpot1 = predicted_ms / predicted_n if predicted_n > 0 else 0
                     ttft1 = prompt_ms
                     
@@ -183,12 +239,14 @@ def main():
                     
                     # --- Turno 2 ---
                     response1_content = response1_data.get('content', '')
-                    prompt2_question = turns[1]
 
-                    # Constrói o histórico da conversa para o segundo turno
-                    # O formato depende do --chat-template usado no servidor
-                    # Para 'chatml', o formato é o seguinte:
-                    full_prompt_turn2 = f"<|im_start|>user\n{prompt1}<|im_end|>\n<|im_start|>assistant\n{response1_content}<|im_end|>\n<|im_start|>user\n{prompt2_question}<|im_end|>\n<|im_start|>assistant\n"
+                    # Constrói o histórico da conversa para o segundo turno usando as perguntas originais
+                    full_prompt_turn2 = (
+                        f"<|im_start|>user\n{raw_question1}<|im_end|>\n"
+                        f"<|im_start|>assistant\n{response1_content}<|im_end|>\n"
+                        f"<|im_start|>user\n{raw_question2}<|im_end|>\n"
+                        f"<|im_start|>assistant\n"
+                    )
                     
                     print(f"Testando: ID={question_id}, Cat={category}, Turno=2")
                     response2_data = run_inference(config, full_prompt_turn2)
@@ -199,15 +257,9 @@ def main():
                     predicted_ms2 = timing2.get('predicted_ms', 0)
                     predicted_n2 = timing2.get('predicted_n', 0)
                     prompt_ms2 = timing2.get('prompt_ms', 0)
-                    
-                    # Usar o valor já calculado pelo servidor quando disponível
                     tps2 = timing2.get('predicted_per_second', 0)
-                    
-                    # Para casos especiais (1 token, EOS), usar uma abordagem mais conservadora
                     if predicted_n2 == 1 and predicted_ms2 < 1.0:
-                        # Muito provável que seja um EOS token imediato - usar valor mais baixo
-                        tps2 = min(tps2, 100)  # Limitar a 100 T/s no máximo
-                    
+                        tps2 = min(tps2, 100)
                     tpot2 = predicted_ms2 / predicted_n2 if predicted_n2 > 0 else 0
                     ttft2 = prompt_ms2
                     
@@ -224,6 +276,40 @@ def main():
             print("-" * 50)
 
     print(f"Benchmark MT-Bench 101 concluído! Resultados salvos em {config['output_csv']}")
+
+    # --- Seção de Desligamento ---
+    shutdown_config = config.get('shutdown_on_completion', {})
+    if shutdown_config.get('enabled', False):
+        delay = shutdown_config.get('delay_seconds', 15)
+        print("-" * 50)
+        print(f"AVISO: O computador será desligado em {delay} segundos.")
+        print("Pressione Ctrl+C para cancelar.")
+        print("-" * 50)
+        
+        try:
+            for i in range(delay, 0, -1):
+                print(f"Desligando em {i}...")
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nDesligamento cancelado pelo usuário.")
+            return
+
+        system_os = platform.system()
+        shutdown_command = ""
+        if system_os == "Windows":
+            shutdown_command = "shutdown /s /t 1"
+        elif system_os == "Linux" or system_os == "Darwin": # Darwin é o macOS
+            shutdown_command = "sudo shutdown -h now"
+        else:
+            print(f"Sistema operacional '{system_os}' não suportado para desligamento automático.")
+            return
+
+        print(f"Executando comando de desligamento: {shutdown_command}")
+        # Adicionar um aviso sobre a necessidade de permissões de administrador
+        if system_os != "Windows":
+            print("Nota: Este comando pode exigir privilégios de administrador (sudo).")
+        
+        os.system(shutdown_command)
 
 if __name__ == "__main__":
     main()

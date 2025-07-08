@@ -6,11 +6,20 @@
       "path": "/home/trecopad/llama.cpp/build/bin/phi-4-Q4_K_M.gguf"
     }
   ],
-  "threads": 8,
+  "threads": 4,
   "mt_bench_url": "https://raw.githubusercontent.com/mtbench101/mt-bench-101/main/data/subjective/mtbench101.jsonl",
   "local_data_file": "mtbench101.jsonl",
   "output_csv": "mt_bench_results.csv",
   "server_host": "127.0.0.1",
   "server_port": 8080,
-  "tokens_to_generate": 512
+  "tokens_to_generate": 512,
+  "sampling_config": {
+    "enabled": true,
+    "prompts_per_category": 5,
+    "random_seed": 42
+  },
+  "shutdown_on_completion": {
+    "enabled": false,
+    "delay_seconds": 15
+  }
 }
